@@ -13,3 +13,73 @@
 #include "xiaomi-sdm660-common.dtsi"
 #include "longcheer/common/longcheer-sdm660-base.dtsi"
 #include "longcheer/wayne/wayne-common-base.dtsi"
+
+/*
+ * Use the stock QTI haptics driver (qti-haptics, input force-feedback)
+ * instead of qpnp-haptic, so the QTI vibrator AIDL HAL gets the tuned
+ * click/tick/heavy-click effects.
+ */
+&spmi_bus {
+	qcom,pm660@1 {
+		/delete-node/ qcom,haptic@c000;
+
+		pm660_haptics: qcom,haptic@c000 {
+			compatible = "qcom,pm660-haptics";
+			reg = <0xc000 0x100>;
+			interrupts = <0x1 0xc0 0x0 IRQ_TYPE_EDGE_BOTH>,
+				     <0x1 0xc0 0x1 IRQ_TYPE_EDGE_BOTH>;
+			interrupt-names = "hap-sc-irq", "hap-play-irq";
+			qcom,actuator-type = "lra";
+			qcom,vmax-mv = <2204>;
+			qcom,play-rate-us = <4878>;
+			qcom,lra-resonance-sig-shape = "sine";
+			qcom,lra-auto-resonance-mode = "zxd";
+			qcom,lra-allow-variable-play-rate;
+
+			wf_0 {
+				/* CLICK */
+				qcom,effect-id = <0>;
+				qcom,wf-pattern = [78 78];
+				qcom,wf-brake-pattern = [02 00 00 00];
+				qcom,lra-auto-resonance-disable;
+			};
+			wf_1 {
+				/* DOUBLE CLICK */
+				qcom,effect-id = <1>;
+				qcom,wf-pattern = [70 02 02 02 02 02 02 02];
+				qcom,wf-repeat-count = <2>;
+				qcom,wf-s-repeat-count = <2>;
+				qcom,lra-auto-resonance-disable;
+			};
+			wf_2 {
+				/* TICK */
+				qcom,effect-id = <2>;
+				qcom,wf-pattern = [7e 7e];
+				qcom,wf-brake-pattern = [03 03 00 00];
+				qcom,lra-auto-resonance-disable;
+			};
+			wf_3 {
+				/* THUD */
+				qcom,effect-id = <3>;
+				qcom,wf-vmax-mv = <3600>;
+				qcom,wf-pattern = [7e 7e 7e];
+				qcom,wf-play-rate-us = <6667>;
+				qcom,lra-auto-resonance-disable;
+			};
+			wf_4 {
+				/* POP */
+				qcom,effect-id = <4>;
+				qcom,wf-vmax-mv = <3600>;
+				qcom,wf-pattern = [7e 7e];
+				qcom,wf-play-rate-us = <5000>;
+				qcom,lra-auto-resonance-disable;
+			};
+			wf_5 {
+				/* HEAVY CLICK */
+				qcom,effect-id = <5>;
+				qcom,wf-pattern = [7e 7e 7e 7e];
+				qcom,lra-auto-resonance-disable;
+			};
+		};
+	};
+};
