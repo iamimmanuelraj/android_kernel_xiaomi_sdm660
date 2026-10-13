@@ -9,3 +9,24 @@ config TOUCHSCREEN_NVT_D2S
 	  to your system.
 
 	  If unsure, say N.
+
+config TOUCHSCREEN_NVT_NO_DEEPSLEEP
+	bool "Keep the controller out of deep sleep on suspend"
+	depends on TOUCHSCREEN_NVT_D2S
+	default n
+	help
+	  Do not send the 0x11 deep sleep command when the screen turns off.
+	  Needed for replacement panels whose touch controller is not woken
+	  up by the panel power sequence and would otherwise stay dead after
+	  resume. Costs some standby power. If unsure, say N.
+
+config TOUCHSCREEN_NVT_BOOT_DISPLAY_CYCLE
+	bool "Cycle the display once after boot to start the controller"
+	depends on TOUCHSCREEN_NVT_D2S && FB
+	default n
+	help
+	  With bootloader continuous splash the kernel never runs the panel
+	  power-up sequence at boot, so on some replacement panels the touch
+	  controller stays dead until the first screen off/on. Blank and
+	  unblank the display once, shortly after userspace first unblanks
+	  it. If unsure, say N.

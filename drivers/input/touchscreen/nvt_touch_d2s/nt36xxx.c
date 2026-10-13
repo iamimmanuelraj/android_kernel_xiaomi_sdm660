@@ -31,11 +31,17 @@
 #if defined(CONFIG_FB)
 #include <linux/notifier.h>
 #include <linux/fb.h>
+#include <linux/console.h>
 #elif defined(CONFIG_HAS_EARLYSUSPEND)
 #include <linux/earlysuspend.h>
 #endif
 
 #include "nt36xxx.h"
+
+#ifdef CONFIG_TOUCHSCREEN_NVT_BOOT_DISPLAY_CYCLE
+static struct delayed_work nvt_cycle_work;
+#endif
+
 #if NVT_TOUCH_ESD_PROTECT
 #include <linux/jiffies.h>
 #endif /* #if NVT_TOUCH_ESD_PROTECT */
@@ -1497,6 +1503,11 @@ static int32_t nvt_ts_probe(struct i2c_client *client, const struct i2c_device_i
 
 	enable_irq(client->irq);
 
+#ifdef CONFIG_TOUCHSCREEN_NVT_BOOT_DISPLAY_CYCLE
+	/* fallback in case userspace never sends an unblank event */
+	schedule_delayed_work(&nvt_cycle_work, msecs_to_jiffies(60000));
+#endif
+
 	return 0;
 
 #if defined(CONFIG_FB)
@@ -1535,6 +1546,9 @@ return:
 *******************************************************/
 static int32_t nvt_ts_remove(struct i2c_client *client)
 {
+#ifdef CONFIG_TOUCHSCREEN_NVT_BOOT_DISPLAY_CYCLE
+	cancel_delayed_work_sync(&nvt_cycle_work);
+#endif
 
 
 #if defined(CONFIG_FB)
@@ -1605,10 +1619,11 @@ static int32_t nvt_ts_suspend(struct device *dev)
 	}else{
 		disable_irq(ts->client->irq);
 
-
+#ifndef CONFIG_TOUCHSCREEN_NVT_NO_DEEPSLEEP
 		buf[0] = EVENT_MAP_HOST_CMD;
 		buf[1] = 0x11;
 		CTP_I2C_WRITE(ts->client, I2C_FW_Address, buf, 2);
+#endif
 	}
 
 	/* release all touches */
@@ -1683,6 +1698,35 @@ static int32_t nvt_ts_resume(struct device *dev)
 }
 
 
+#ifdef CONFIG_TOUCHSCREEN_NVT_BOOT_DISPLAY_CYCLE
+static bool nvt_cycle_done;
+
+static void nvt_fb_set_blank(struct fb_info *fbi, int blank)
+{
+	/* same as writing to /sys/class/graphics/fb0/blank */
+	console_lock();
+	fbi->flags |= FBINFO_MISC_USEREVENT;
+	fb_blank(fbi, blank);
+	fbi->flags &= ~FBINFO_MISC_USEREVENT;
+	console_unlock();
+}
+
+static void nvt_boot_display_cycle(struct work_struct *work)
+{
+	struct fb_info *fbi = registered_fb[0];
+
+	if (nvt_cycle_done || !fbi)
+		return;
+	nvt_cycle_done = true;
+
+	NVT_LOG("display off/on cycle to start the touch controller\n");
+	nvt_fb_set_blank(fbi, FB_BLANK_POWERDOWN);
+	msleep(300);
+	nvt_fb_set_blank(fbi, FB_BLANK_UNBLANK);
+}
+static DECLARE_DELAYED_WORK(nvt_cycle_work, nvt_boot_display_cycle);
+#endif
+
 #if defined(CONFIG_FB)
 static int fb_notifier_callback(struct notifier_block *self, unsigned long event, void *data)
 {
@@ -1702,6 +1746,12 @@ static int fb_notifier_callback(struct notifier_block *self, unsigned long event
 		blank = evdata->data;
 		if (*blank == FB_BLANK_UNBLANK) {
 			nvt_ts_resume(&ts->client->dev);
+#ifdef CONFIG_TOUCHSCREEN_NVT_BOOT_DISPLAY_CYCLE
+			/* userspace owns the display now; cycle it once shortly */
+			if (!nvt_cycle_done)
+				mod_delayed_work(system_wq, &nvt_cycle_work,
+						 msecs_to_jiffies(8000));
+#endif
 		}
 	}
 
