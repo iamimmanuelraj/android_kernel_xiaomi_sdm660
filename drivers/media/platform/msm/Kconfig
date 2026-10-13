@@ -51,6 +51,13 @@ menuconfig MSMB_CAMERA_LEGACY
        and postprocessing drivers.
        Legacy msm-4.4 version
 
+config MSMB_CAMERA_OSS
+     bool "QTI MSM camera and video capture 2.0 (OSS camera HAL version)"
+     depends on MSMB_CAMERA && !MSMB_CAMERA_LEGACY
+     help
+       Say Y here to build the camera_v2-oss stack, which matches the
+       open-source QCamera2 HAL and its *-oss.h uapi headers.
+
 config MSMB_CAMERA_DEBUG
      bool "QTI MSM camera 2.0 debugging with printk"
      depends on MSMB_CAMERA
