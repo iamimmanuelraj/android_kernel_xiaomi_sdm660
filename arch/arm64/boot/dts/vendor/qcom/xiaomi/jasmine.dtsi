@@ -83,3 +83,16 @@
 		};
 	};
 };
+
+/*
+ * jasmine has no dtbo partition and uses retrofit dynamic partitions, so
+ * first stage init must only wait for vbmeta and boot when it sets up
+ * dm-verity (system/vendor are logical partitions).
+ */
+&firmware {
+	android {
+		vbmeta {
+			parts = "vbmeta,boot";
+		};
+	};
+};
