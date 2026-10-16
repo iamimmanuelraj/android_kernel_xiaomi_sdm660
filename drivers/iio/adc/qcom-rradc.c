@@ -189,6 +189,8 @@
 #define FG_RR_CONV_CONT_CBK_TIME_MIN_MS	10
 #define FG_RR_CONV_MAX_RETRY_CNT		50
 #define FG_RR_CONV_STALLED_RETRY_CNT		4
+#define FG_RR_CONV_RESET_RETRY_CNT		10
+#define FG_RR_FG_RESET_INTERVAL_MS		60000
 #define FG_RR_TP_REV_VERSION1		21
 #define FG_RR_TP_REV_VERSION2		29
 #define FG_RR_TP_REV_VERSION3		32
@@ -236,6 +238,8 @@ struct rradc_chip {
 	bool				conv_cbk;
 	bool				rradc_fg_reset_wa;
 	bool				stalled;
+	bool				fg_reset_done;
+	unsigned long			last_fg_reset;
 	struct work_struct	psy_notify_work;
 };
 
@@ -768,12 +772,37 @@ static bool rradc_is_usb_present(struct rradc_chip *chip)
 	return usb_present;
 }
 
+static int rradc_fg_reset(struct rradc_chip *chip)
+{
+	union power_supply_propval pval = {0, };
+	int rc;
+
+	/* Don't keep resetting an RRADC that a reset does not bring back */
+	if (chip->fg_reset_done && time_before(jiffies, chip->last_fg_reset +
+			msecs_to_jiffies(FG_RR_FG_RESET_INTERVAL_MS)))
+		return -EBUSY;
+
+	if (!rradc_is_bms_psy_available(chip)) {
+		pr_err("Error obtaining bms power supply\n");
+		return -EINVAL;
+	}
+
+	chip->fg_reset_done = true;
+	chip->last_fg_reset = jiffies;
+	pr_err("rradc is hung, Proceed to recovery\n");
+	rc = power_supply_set_property(chip->bms_psy,
+			POWER_SUPPLY_PROP_FG_RESET_CLOCK, &pval);
+	if (rc < 0)
+		pr_err("Couldn't reset FG clock rc=%d\n", rc);
+
+	return rc;
+}
+
 static int rradc_check_status_ready_with_retry(struct rradc_chip *chip,
 		struct rradc_chan_prop *prop, u8 *buf, u16 status)
 {
 	int rc = 0, retry_cnt = 0, mask = 0, max_retry;
 	bool timed_out;
-	union power_supply_propval pval = {0, };
 
 	/*
 	 * Once a conversion has timed out, the RRADC usually stays stalled
@@ -822,6 +851,25 @@ static int rradc_check_status_ready_with_retry(struct rradc_chip *chip,
 
 	timed_out = ((buf[0] & mask) != mask) && (retry_cnt >= max_retry);
 
+	/* DCIN never converts without a DC input; that is not a hang */
+	if (timed_out && chip->rradc_fg_reset_wa &&
+			prop->channel != RR_ADC_DCIN_V &&
+			prop->channel != RR_ADC_DCIN_I &&
+			!rradc_fg_reset(chip)) {
+		/* Give the RRADC a moment to convert again after the reset */
+		for (retry_cnt = 0; ((buf[0] & mask) != mask) &&
+				retry_cnt < FG_RR_CONV_RESET_RETRY_CNT;
+				retry_cnt++) {
+			msleep(FG_RR_CONV_CONTINUOUS_TIME_MIN_MS);
+			rc = rradc_read(chip, status, buf, 1);
+			if (rc < 0) {
+				pr_err("status read failed:%d\n", rc);
+				return rc;
+			}
+		}
+		timed_out = (buf[0] & mask) != mask;
+	}
+
 	if ((buf[0] & mask) == mask) {
 		if (chip->stalled)
 			pr_info("conversions completing again\n");
@@ -829,33 +877,13 @@ static int rradc_check_status_ready_with_retry(struct rradc_chip *chip,
 	} else if (timed_out &&
 			prop->channel != RR_ADC_DCIN_V &&
 			prop->channel != RR_ADC_DCIN_I) {
-		/* DCIN never converts without a DC input; not a stall */
 		if (!chip->stalled)
 			pr_err("conversions stalled, polling briefly from now on\n");
 		chip->stalled = true;
 	}
 
-	if (timed_out &&
-		((prop->channel != RR_ADC_DCIN_V) ||
-		(prop->channel != RR_ADC_DCIN_I)) &&
-		chip->rradc_fg_reset_wa) {
-		pr_err("rradc is hung, Proceed to recovery\n");
-		if (rradc_is_bms_psy_available(chip)) {
-			rc = power_supply_set_property(chip->bms_psy,
-					POWER_SUPPLY_PROP_FG_RESET_CLOCK,
-					&pval);
-			if (rc < 0) {
-				pr_err("Couldn't reset FG clock rc=%d\n", rc);
-				return rc;
-			}
-		} else {
-			pr_err("Error obtaining bms power supply\n");
-			rc = -EINVAL;
-		}
-	} else {
-		if (timed_out)
-			rc = -ENODATA;
-	}
+	if (timed_out)
+		rc = -ENODATA;
 
 	return rc;
 }
@@ -1186,26 +1214,10 @@ static void psy_notify_work(struct work_struct *work)
 		if (pval.intval == POWER_SUPPLY_STATUS_CHARGING) {
 			chip->conv_cbk = true;
 			prop = &chip->chan_props[RR_ADC_USBIN_V];
+			/* A hung RRADC gets reset inside the conversion */
 			rc = rradc_do_conversion(chip, prop, &adc_code);
-			if (rc == -ENODATA) {
-				pr_err("rradc is hung, Proceed to recovery\n");
-				if (rradc_is_bms_psy_available(chip)) {
-					rc = power_supply_set_property
-						(chip->bms_psy,
-						POWER_SUPPLY_PROP_FG_RESET_CLOCK,
-						&pval);
-					if (rc < 0)
-						pr_err("Couldn't reset FG clock rc=%d\n",
-								rc);
-					prop = &chip->chan_props[RR_ADC_BATT_ID];
-					rc = rradc_do_conversion(chip, prop,
-							&adc_code);
-					if (rc == -ENODATA)
-						pr_err("RRADC read failed after reset\n");
-				} else {
-					pr_err("Error obtaining bms power supply\n");
-				}
-			}
+			if (rc == -ENODATA)
+				pr_err("RRADC read failed after reset\n");
 		}
 	} else {
 		pr_err("Error obtaining battery power supply\n");
