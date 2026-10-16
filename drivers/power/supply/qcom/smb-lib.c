@@ -2210,11 +2210,15 @@ int smblib_get_prop_battery_full_design(struct smb_charger *chg,
 	if (!chg->bms_psy)
 		return -EINVAL;
 	chip = power_supply_get_drvdata(chg->bms_psy);
-	if (chip->battery_full_design)
-		val->intval = chip->battery_full_design;
-	else
-		val->intval = 4000;
-	return 0;
+	/* qcom,battery-full-design is in mAh, the property is in uAh */
+	if (chip->battery_full_design) {
+		val->intval = chip->battery_full_design * 1000;
+		return 0;
+	}
+
+	/* No profile loaded: report the FG nominal capacity */
+	return smblib_get_prop_from_bms(chg,
+			POWER_SUPPLY_PROP_CHARGE_FULL_DESIGN, val);
 }
 #endif
 
