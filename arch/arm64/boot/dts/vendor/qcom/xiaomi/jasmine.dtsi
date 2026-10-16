@@ -96,3 +96,12 @@
 		};
 	};
 };
+
+/*
+ * The PM660 RRADC can hang and stay hung across reboots (the FG is
+ * always powered), which leaves the battery ID unreadable and the
+ * battery temperature stale. Let it reset the FG BCL to recover.
+ */
+&pm660_rradc {
+	qcom,rradc-fg-reset-wa;
+};
