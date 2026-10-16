@@ -188,6 +188,7 @@
 #define FG_RR_CONV_CONTINUOUS_TIME_MIN_MS	50
 #define FG_RR_CONV_CONT_CBK_TIME_MIN_MS	10
 #define FG_RR_CONV_MAX_RETRY_CNT		50
+#define FG_RR_CONV_STALLED_RETRY_CNT		4
 #define FG_RR_TP_REV_VERSION1		21
 #define FG_RR_TP_REV_VERSION2		29
 #define FG_RR_TP_REV_VERSION3		32
@@ -234,6 +235,7 @@ struct rradc_chip {
 	struct notifier_block		nb;
 	bool				conv_cbk;
 	bool				rradc_fg_reset_wa;
+	bool				stalled;
 	struct work_struct	psy_notify_work;
 };
 
@@ -769,8 +771,17 @@ static bool rradc_is_usb_present(struct rradc_chip *chip)
 static int rradc_check_status_ready_with_retry(struct rradc_chip *chip,
 		struct rradc_chan_prop *prop, u8 *buf, u16 status)
 {
-	int rc = 0, retry_cnt = 0, mask = 0;
+	int rc = 0, retry_cnt = 0, mask = 0, max_retry;
+	bool timed_out;
 	union power_supply_propval pval = {0, };
+
+	/*
+	 * Once a conversion has timed out, the RRADC usually stays stalled
+	 * for the whole boot. Don't spend 2.5 s polling on every read then;
+	 * poll briefly until a conversion completes again.
+	 */
+	max_retry = chip->stalled ? FG_RR_CONV_STALLED_RETRY_CNT :
+				FG_RR_CONV_MAX_RETRY_CNT;
 
 	switch (prop->channel) {
 	case RR_ADC_BATT_ID:
@@ -783,7 +794,7 @@ static int rradc_check_status_ready_with_retry(struct rradc_chip *chip,
 	}
 
 	while (((buf[0] & mask) != mask) &&
-			(retry_cnt < FG_RR_CONV_MAX_RETRY_CNT)) {
+			(retry_cnt < max_retry)) {
 		pr_debug("%s is not ready; nothing to read:0x%x\n",
 			rradc_chans[prop->channel].datasheet_name, buf[0]);
 
@@ -809,7 +820,22 @@ static int rradc_check_status_ready_with_retry(struct rradc_chip *chip,
 		}
 	}
 
-	if ((retry_cnt >= FG_RR_CONV_MAX_RETRY_CNT) &&
+	timed_out = ((buf[0] & mask) != mask) && (retry_cnt >= max_retry);
+
+	if ((buf[0] & mask) == mask) {
+		if (chip->stalled)
+			pr_info("conversions completing again\n");
+		chip->stalled = false;
+	} else if (timed_out &&
+			prop->channel != RR_ADC_DCIN_V &&
+			prop->channel != RR_ADC_DCIN_I) {
+		/* DCIN never converts without a DC input; not a stall */
+		if (!chip->stalled)
+			pr_err("conversions stalled, polling briefly from now on\n");
+		chip->stalled = true;
+	}
+
+	if (timed_out &&
 		((prop->channel != RR_ADC_DCIN_V) ||
 		(prop->channel != RR_ADC_DCIN_I)) &&
 		chip->rradc_fg_reset_wa) {
@@ -827,7 +853,7 @@ static int rradc_check_status_ready_with_retry(struct rradc_chip *chip,
 			rc = -EINVAL;
 		}
 	} else {
-		if (retry_cnt >= FG_RR_CONV_MAX_RETRY_CNT)
+		if (timed_out)
 			rc = -ENODATA;
 	}
 
