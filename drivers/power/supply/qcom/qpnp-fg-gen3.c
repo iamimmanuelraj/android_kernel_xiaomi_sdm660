@@ -3903,6 +3903,29 @@ static int fg_bcl_reset(struct fg_dev *chip)
 	u8 val, peek_mux;
 	bool success = false;
 
+	/*
+	 * PM660 accesses SRAM through IMA and never gets a DMA arbiter grant,
+	 * so the handshake below always fails there. Pulse the reset with
+	 * SRAM access held off instead.
+	 */
+	if (!chip->use_dma) {
+		mutex_lock(&chip->sram_rw_lock);
+		rc = fg_masked_write(chip, BATT_SOC_RST_CTRL0(chip),
+					BCL_RESET_BIT, BCL_RESET_BIT);
+		if (rc < 0) {
+			pr_err("Error in writing RST_CTRL0, rc=%d\n", rc);
+		} else {
+			usleep_range(2000, 3000);
+			rc = fg_masked_write(chip, BATT_SOC_RST_CTRL0(chip),
+						BCL_RESET_BIT, 0);
+			if (rc < 0)
+				pr_err("Error in writing RST_CTRL0, rc=%d\n",
+					rc);
+		}
+		mutex_unlock(&chip->sram_rw_lock);
+		return rc;
+	}
+
 	/* Read initial value of peek mux1 */
 	rc = fg_read(chip, BATT_INFO_PEEK_MUX1(chip), &peek_mux, 1);
 	if (rc < 0) {
