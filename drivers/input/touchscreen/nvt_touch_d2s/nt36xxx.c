@@ -1701,16 +1701,6 @@ static int32_t nvt_ts_resume(struct device *dev)
 #ifdef CONFIG_TOUCHSCREEN_NVT_BOOT_DISPLAY_CYCLE
 static bool nvt_cycle_done;
 
-static void nvt_fb_set_blank(struct fb_info *fbi, int blank)
-{
-	/* same as writing to /sys/class/graphics/fb0/blank */
-	console_lock();
-	fbi->flags |= FBINFO_MISC_USEREVENT;
-	fb_blank(fbi, blank);
-	fbi->flags &= ~FBINFO_MISC_USEREVENT;
-	console_unlock();
-}
-
 static void nvt_boot_display_cycle(struct work_struct *work)
 {
 	struct fb_info *fbi = registered_fb[0];
@@ -1720,9 +1710,24 @@ static void nvt_boot_display_cycle(struct work_struct *work)
 	nvt_cycle_done = true;
 
 	NVT_LOG("display off/on cycle to start the touch controller\n");
-	nvt_fb_set_blank(fbi, FB_BLANK_POWERDOWN);
+	/*
+	 * Same lock order as FBIOBLANK (console_lock -> lock_fb_info), but held
+	 * across the whole cycle: HWC's MSMFB_* ioctls take lock_fb_info in
+	 * do_fb_ioctl(), so they wait for the panel to come back instead of
+	 * failing with -EPERM on every frame while it is off.
+	 */
+	console_lock();
+	if (!lock_fb_info(fbi)) {
+		console_unlock();
+		return;
+	}
+	fbi->flags |= FBINFO_MISC_USEREVENT;
+	fb_blank(fbi, FB_BLANK_POWERDOWN);
 	msleep(300);
-	nvt_fb_set_blank(fbi, FB_BLANK_UNBLANK);
+	fb_blank(fbi, FB_BLANK_UNBLANK);
+	fbi->flags &= ~FBINFO_MISC_USEREVENT;
+	unlock_fb_info(fbi);
+	console_unlock();
 }
 static DECLARE_DELAYED_WORK(nvt_cycle_work, nvt_boot_display_cycle);
 #endif
