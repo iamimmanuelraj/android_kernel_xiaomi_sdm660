@@ -66,6 +66,16 @@ static int download_mode = 1;
 static struct kobject dload_kobj;
 
 static int in_panic;
+
+/*
+ * Bring-up aid: after a kernel panic, reboot into the bootloader (fastboot)
+ * instead of booting the same slot again. The reset stays warm, so the failed
+ * boot's pstore survives, and the device stops instead of looping until the
+ * slot runs out of retries. Off by default; msm_poweroff.panic_to_bootloader=1
+ * on the kernel command line enables it.
+ */
+static bool panic_to_bootloader;
+module_param(panic_to_bootloader, bool, 0644);
 static int dload_type = SCM_DLOAD_FULLDUMP;
 static void *dload_mode_addr;
 static bool dload_mode_enabled;
@@ -467,6 +477,12 @@ static void halt_spmi_pmic_arbiter(void)
 static void msm_restart_prepare(const char *cmd)
 {
 	bool need_warm_reset = false;
+
+	if (in_panic && panic_to_bootloader && (cmd == NULL || cmd[0] == '\0')) {
+		pr_emerg("panic: rebooting to the bootloader (panic_to_bootloader)\n");
+		cmd = "bootloader";
+		force_warm_reboot = true;
+	}
 	/* Write download mode flags if we're panic'ing
 	 * Write download mode flags if restart_mode says so
 	 * Kill download mode if master-kill switch is set
@@ -589,7 +605,7 @@ static void do_msm_restart(enum reboot_mode reboot_mode, const char *cmd)
 	 * Trigger a watchdog bite here and if this fails,
 	 * device will take the usual restart path.
 	 */
-	if (WDOG_BITE_ON_PANIC && in_panic)
+	if (WDOG_BITE_ON_PANIC && in_panic && !panic_to_bootloader)
 		msm_trigger_wdog_bite();
 
 	scm_disable_sdi();
