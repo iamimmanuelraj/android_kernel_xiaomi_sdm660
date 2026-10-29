@@ -1007,6 +1007,37 @@ static void nvt_esd_check_func(struct work_struct *work)
 #endif /* #if NVT_TOUCH_ESD_PROTECT */
 
 #define POINT_DATA_LEN 65
+
+/*
+ * Point data checksum, as in newer Novatek drivers (POINT_DATA_CHECKSUM): byte 65
+ * makes bytes 1..65 sum to 0. A read that overlaps the firmware updating its
+ * event buffer comes back with the first bytes repeated (seen in recovery on
+ * jasmine: "0a 16 0a 16 28 cc ..."), which shifts every field. Frames without a
+ * touch are all 0xFF and carry no checksum.
+ */
+#define POINT_DATA_CHECKSUM_LEN 65
+#define POINT_DATA_READ_TRIES 3
+static unsigned int nvt_bad_frames;
+module_param_named(bad_frames, nvt_bad_frames, uint, 0444);
+static unsigned int nvt_dropped_frames;
+module_param_named(dropped_frames, nvt_dropped_frames, uint, 0444);
+
+static bool nvt_point_data_valid(const uint8_t *buf)
+{
+	uint8_t sum = 0;
+	bool all_ff = true;
+	int32_t i;
+
+	for (i = 1; i < POINT_DATA_CHECKSUM_LEN; i++) {
+		sum += buf[i];
+		if (buf[i] != 0xFF)
+			all_ff = false;
+	}
+	if (all_ff)
+		return true;
+
+	return (uint8_t)(sum + buf[POINT_DATA_CHECKSUM_LEN]) == 0;
+}
 /*******************************************************
 Description:
 	Novatek touchscreen work function.
@@ -1029,13 +1060,22 @@ static void nvt_ts_work_func(struct work_struct *work)
 #endif /* MT_PROTOCOL_B */
 	int32_t i = 0;
 	int32_t finger_cnt = 0;
+	int32_t tries = 0;
 
 	mutex_lock(&ts->lock);
 
-	ret = CTP_I2C_READ(ts->client, I2C_FW_Address, point_data, POINT_DATA_LEN + 1);
-	if (ret < 0) {
-		NVT_ERR("CTP_I2C_READ failed.(%d)\n", ret);
-		goto XFER_ERROR;
+	for (;;) {
+		ret = CTP_I2C_READ(ts->client, I2C_FW_Address, point_data, POINT_DATA_LEN + 1);
+		if (ret < 0) {
+			NVT_ERR("CTP_I2C_READ failed.(%d)\n", ret);
+			goto XFER_ERROR;
+		}
+		/* gesture frames (screen off) have their own format */
+		if (!bTouchIsAwake || nvt_point_data_valid(point_data))
+			break;
+		nvt_bad_frames++;
+		if (++tries >= POINT_DATA_READ_TRIES)
+			break;
 	}
 /*
 	//--- dump I2C buf ---
@@ -1061,6 +1101,12 @@ static void nvt_ts_work_func(struct work_struct *work)
 		return;
 	}
 #endif
+
+	/* still corrupt after the re-reads: drop it, the next frame follows within ms */
+	if (!nvt_point_data_valid(point_data)) {
+		nvt_dropped_frames++;
+		goto XFER_ERROR;
+	}
 
 	finger_cnt = 0;
 
